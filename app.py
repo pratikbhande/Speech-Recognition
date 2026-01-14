@@ -1,4 +1,4 @@
-"""Streamlit UI for voice recognition POC - Optimized Version."""
+"""Streamlit UI for voice recognition POC - Fixed Version."""
 
 import streamlit as st
 import numpy as np
@@ -91,10 +91,10 @@ def identify_speaker_file(audio_file):
         if len(audio_array.shape) > 1:
             audio_array = audio_array.mean(axis=1)
         
-        # Check minimum length (need at least 2 seconds)
-        min_samples = sr * 2
+        # Check minimum length (need at least 1 second)
+        min_samples = sr * 1
         if len(audio_array) < min_samples:
-            st.error(f"⚠️ Audio too short! Need at least 2 seconds. Got {len(audio_array)/sr:.1f}s")
+            st.error(f"⚠️ Audio too short! Need at least 1 second. Got {len(audio_array)/sr:.1f}s")
             return None, None, None, None
         
         # Use longer segment for better accuracy (up to 10 seconds)
@@ -113,6 +113,8 @@ def identify_speaker_file(audio_file):
         
     except Exception as e:
         st.error(f"⚠️ Error processing audio: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None, None, None, None
 
 
@@ -131,6 +133,8 @@ def enroll_speaker(name):
         st.session_state.current_enrollment_audio = None
         return True, f"✅ Successfully enrolled as {name}! (ID: {client_id})"
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return False, f"❌ Enrollment failed: {str(e)}"
 
 
@@ -149,13 +153,47 @@ def delete_speaker(client_id):
 
 
 def get_sample_speakers():
-    """Get list of sample speakers."""
-    speakers = []
-    for idx, name in enumerate(config.SAMPLE_SPEAKERS, 1):
-        audio_path = config.SAMPLES_DIR / f"sample_{idx:02d}.wav"
-        if audio_path.exists():
-            speakers.append((name, str(audio_path)))
-    return speakers
+    """Get list of ALL sample speakers from database."""
+    try:
+        all_speakers = service.get_all_speakers()
+        
+        # Get samples by BOTH is_sample flag AND client_id pattern
+        sample_speakers = [
+            s for s in all_speakers 
+            if s.get('is_sample', False) or s.get('client_id', '').startswith('SAMPLE_')
+        ]
+        
+        speakers = []
+        for speaker in sample_speakers:
+            name = speaker.get('name', 'Unknown')
+            client_id = speaker.get('client_id', '')
+            
+            # Try to find corresponding audio file
+            try:
+                parts = client_id.split('_')
+                if len(parts) >= 2 and parts[0] == 'SAMPLE':
+                    sample_num = parts[1]
+                    audio_path = config.SAMPLES_DIR / f"sample_{sample_num}.wav"
+                    
+                    if audio_path.exists():
+                        speakers.append((name, str(audio_path), client_id))
+                    else:
+                        speakers.append((name, None, client_id))
+                else:
+                    # Non-standard naming, still include
+                    speakers.append((name, None, client_id))
+            except:
+                speakers.append((name, None, client_id))
+        
+        # Sort by client_id for consistent ordering
+        speakers.sort(key=lambda x: x[2])
+        
+        return speakers
+    except Exception as e:
+        print(f"Error loading speakers: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 
 # Header
@@ -202,7 +240,7 @@ with tab1:
         st.markdown("### 🎤 Voice Recording")
         st.caption("⏱️ Record 3-5 seconds of clear speech for best results")
         
-        # Use native audio input instead of audio_recorder
+        # Use native audio input
         audio_file = st.file_uploader(
             "Upload audio or use microphone below",
             type=['wav', 'mp3', 'm4a', 'ogg'],
@@ -258,7 +296,7 @@ with tab1:
                 with col_b:
                     if confidence >= 0.85:
                         st.success("High Confidence ✅")
-                    elif confidence >= 0.75:
+                    elif confidence >= 0.70:
                         st.info("Good Match ✓")
                     else:
                         st.warning("Low Confidence ⚠️")
@@ -308,61 +346,113 @@ with tab2:
     
     sample_speakers = get_sample_speakers()
     
+    # Show database statistics
+    all_speakers = service.get_all_speakers()
+    total_samples = len([
+        s for s in all_speakers 
+        if s.get('is_sample', False) or s.get('client_id', '').startswith('SAMPLE_')
+    ])
+    samples_with_audio = len([s for s in sample_speakers if s[1] is not None])
+    
+    col_stat1, col_stat2, col_stat3 = st.columns(3)
+    with col_stat1:
+        st.metric("Total Enrolled Samples", total_samples)
+    with col_stat2:
+        st.metric("Samples with Audio Files", samples_with_audio)
+    with col_stat3:
+        st.metric("Ready to Test", samples_with_audio)
+    
+    st.markdown("---")
+    
     if sample_speakers:
         col1, col2 = st.columns([1, 1], gap="large")
         
         with col1:
             st.markdown("#### 🎵 Sample Audio Library")
+            st.caption(f"Showing all {len(sample_speakers)} enrolled samples")
             
-            speaker_names = [name for name, _ in sample_speakers]
-            selected_speaker = st.selectbox(
+            # Create display options
+            speaker_display = []
+            for idx, (name, audio_path, client_id) in enumerate(sample_speakers):
+                status = "✅" if audio_path else "⚠️ (no audio)"
+                speaker_display.append(f"{status} {name}")
+            
+            selected_index = st.selectbox(
                 "Select a speaker to test",
-                speaker_names,
+                range(len(speaker_display)),
+                format_func=lambda i: speaker_display[i],
                 key="sample_select"
             )
             
-            selected_path = next(path for name, path in sample_speakers if name == selected_speaker)
+            selected_name, selected_path, selected_client_id = sample_speakers[selected_index]
             
-            st.audio(selected_path)
+            # Show client ID
+            st.caption(f"Client ID: `{selected_client_id}`")
             
-            if st.button("🧪 Run Test", key="test_btn", type="primary", use_container_width=True):
-                with st.spinner("🔄 Testing..."):
-                    try:
-                        is_known, client_id, name, confidence = service.identify_speaker(selected_path)
-                        st.session_state.test_result = (is_known, client_id, name, confidence, selected_speaker)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Test failed: {str(e)}")
+            if selected_path and Path(selected_path).exists():
+                st.audio(selected_path)
+                
+                if st.button("🧪 Run Test", key="test_btn", type="primary", use_container_width=True):
+                    with st.spinner("🔄 Testing..."):
+                        try:
+                            is_known, client_id, name, confidence = service.identify_speaker(selected_path)
+                            st.session_state.test_result = (is_known, client_id, name, confidence, selected_name, selected_client_id)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Test failed: {str(e)}")
+                            import traceback
+                            traceback.print_exc()
+            else:
+                st.warning(f"⚠️ Audio file not found for {selected_name}")
+                st.info("This speaker is enrolled in the database but the audio file is missing.")
         
         with col2:
             st.markdown("#### 📊 Test Results")
             
             if 'test_result' in st.session_state and st.session_state.test_result:
-                is_known, client_id, name, confidence, expected = st.session_state.test_result
+                is_known, client_id, name, confidence, expected_name, expected_id = st.session_state.test_result
                 
                 if is_known:
-                    match = name == expected
+                    match = (client_id == expected_id)
                     
                     if match:
                         st.markdown('<div class="success-box">', unsafe_allow_html=True)
-                        st.markdown(f"### ✅ Correct!")
+                        st.markdown(f"### ✅ Correct Match!")
                         st.markdown(f"**Identified:** {name}")
+                        st.markdown(f"**Client ID:** `{client_id}`")
                         st.markdown('</div>', unsafe_allow_html=True)
                     else:
                         st.markdown('<div class="warning-box">', unsafe_allow_html=True)
                         st.markdown(f"### ⚠️ Mismatch!")
-                        st.markdown(f"**Identified:** {name}")
-                        st.markdown(f"**Expected:** {expected}")
+                        st.markdown(f"**Identified:** {name} (`{client_id}`)")
+                        st.markdown(f"**Expected:** {expected_name} (`{expected_id}`)")
                         st.markdown('</div>', unsafe_allow_html=True)
                     
-                    st.metric("Confidence", f"{confidence:.1%}")
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.metric("Confidence", f"{confidence:.1%}")
+                    with col_b:
+                        if confidence >= 0.85:
+                            st.success("High Confidence ✅")
+                        elif confidence >= 0.70:
+                            st.info("Good Match ✓")
+                        else:
+                            st.warning("Low Confidence ⚠️")
+                    
                     st.progress(confidence)
+                    
+                    if not match:
+                        st.caption("💡 Tip: Mismatches can occur with similar voices. Try adjusting the threshold or re-enrolling with better quality samples.")
                 else:
-                    st.error("❌ Not recognized")
+                    st.error(f"❌ Not Recognized")
+                    st.markdown(f"**Confidence:** {confidence:.1%}")
+                    st.markdown(f"**Expected:** {expected_name}")
+                    st.caption(f"Below threshold ({config.SIMILARITY_THRESHOLD}). Try lowering the threshold in sidebar.")
             else:
-                st.info("Select and test a speaker")
+                st.info("Select a speaker and click 'Run Test'")
     else:
-        st.warning("⚠️ No samples found! Run `python data_setup.py`")
+        st.warning("⚠️ No sample speakers found in database!")
+        st.info("Run `python data_setup.py` to enroll sample speakers")
 
 
 # ==================== TAB 3: Database ====================
@@ -380,7 +470,7 @@ with tab3:
         with col1:
             st.metric("Total", len(speakers))
         with col2:
-            samples = len([s for s in speakers if s.get('client_id', '').startswith('SAMPLE_')])
+            samples = len([s for s in speakers if s.get('client_id', '').startswith('SAMPLE_') or s.get('is_sample', False)])
             st.metric("Samples", samples)
         with col3:
             st.metric("Users", len(speakers) - samples)
@@ -391,7 +481,7 @@ with tab3:
             name = speaker.get('name', 'N/A')
             client_id = speaker.get('client_id', 'N/A')
             created = str(speaker.get('created_at', 'N/A'))[:19]
-            is_sample = client_id.startswith('SAMPLE_')
+            is_sample = client_id.startswith('SAMPLE_') or speaker.get('is_sample', False)
             
             col1, col2, col3, col4 = st.columns([0.5, 2, 2.5, 1])
             
@@ -413,7 +503,7 @@ with tab3:
             
             st.divider()
     else:
-        st.info("📭 No speakers enrolled yet")
+        st.info("🔭 No speakers enrolled yet")
 
 
 # Footer

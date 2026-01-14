@@ -1,18 +1,19 @@
-"""Setup sample speakers with audio preprocessing."""
+"""Setup sample speakers with minimal preprocessing."""
 
 from pathlib import Path
 import soundfile as sf
 import config
-from voice_embeddings import VoiceEmbedder  # VoiceEmbedder class
+from voice_embeddings import VoiceEmbedder
 from database import MongoManager, QdrantManager
 from datetime import datetime
 from audio_preprocessing import preprocess_audio
+import numpy as np
 
 
 def setup_samples():
-    """Enroll all sample speakers with preprocessing."""
+    """Enroll all sample speakers with MINIMAL preprocessing."""
     
-    embeddings = VoiceEmbedder()  # VoiceEmbedder instance
+    embeddings = VoiceEmbedder()
     mongo = MongoManager()
     qdrant = QdrantManager()
     
@@ -29,12 +30,15 @@ def setup_samples():
         print("❌ No audio files found!")
         return
     
-    print(f"\n📁 Found {len(audio_files)} audio files")
+    # CRITICAL FIX: Sort files by name to ensure consistent order
+    audio_files.sort(key=lambda x: x.name)
+    
+    print(f"\n🔍 Found {len(audio_files)} audio files")
     print("=" * 60)
     
     enrolled_count = 0
     
-    for idx, audio_file in enumerate(audio_files[:10], 1):  # Max 10 samples
+    for idx, audio_file in enumerate(audio_files[:10], 1):
         try:
             print(f"\n[{idx}/10] Processing: {audio_file.name}")
             
@@ -42,27 +46,44 @@ def setup_samples():
             audio, sr = sf.read(audio_file)
             print(f"  ✓ Loaded: {len(audio)/sr:.1f}s @ {sr}Hz")
             
-            # PREPROCESSING: Clean audio before enrollment
-            audio = preprocess_audio(audio, sr, enhance=True)
-            print(f"  ✓ Preprocessed: {len(audio)/sr:.1f}s (cleaned)")
+            # Convert to mono if stereo
+            if len(audio.shape) > 1:
+                audio = audio.mean(axis=1)
             
-            # Validate
-            if len(audio) < sr * 1:
-                print(f"  ⚠️ Skipped: Too short after VAD")
+            # MINIMAL preprocessing for enrollment - preserve voice characteristics
+            audio_processed = preprocess_audio(audio, sr, for_enrollment=True)
+            print(f"  ✓ Preprocessed: {len(audio_processed)/sr:.1f}s")
+            
+            # Safety check - if preprocessing removed too much, use original
+            if len(audio_processed) < sr * 1.0:
+                print(f"  ⚠️ Preprocessing too aggressive, using original audio")
+                audio_processed = audio
+                # Just normalize
+                max_val = np.abs(audio_processed).max()
+                if max_val > 0:
+                    audio_processed = audio_processed / max_val
+            
+            # Validate minimum length
+            if len(audio_processed) < sr * 1.0:
+                print(f"  ⚠️ Skipped: Too short (need >1s, got {len(audio_processed)/sr:.1f}s)")
                 continue
             
-            if len(audio) > sr * 30:
-                audio = audio[:sr * 30]
+            # Truncate if too long (keep first 30s)
+            if len(audio_processed) > sr * 30:
+                audio_processed = audio_processed[:sr * 30]
                 print(f"  ✓ Truncated to 30s")
             
             # Get speaker name
-            speaker_name = config.SAMPLE_SPEAKERS[idx - 1]
+            if idx <= len(config.SAMPLE_SPEAKERS):
+                speaker_name = config.SAMPLE_SPEAKERS[idx - 1]
+            else:
+                speaker_name = f"Speaker {idx}"
             
             # Generate client ID
             client_id = f"SAMPLE_{idx:02d}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
             
-            # Extract embedding - FIXED: use extract_from_array()
-            embedding = embeddings.extract_from_array(audio, sr)
+            # Extract embedding
+            embedding = embeddings.extract_from_array(audio_processed, sr)
             print(f"  ✓ Embedding: {embedding.shape}")
             
             # Store in MongoDB
@@ -78,10 +99,12 @@ def setup_samples():
             point_id = hash(client_id) & 0x7FFFFFFF
             qdrant.insert(point_id, embedding, {"client_id": client_id})
             
-            # Rename file
+            # Save processed file with correct name
             new_name = samples_dir / f"sample_{idx:02d}.wav"
-            sf.write(new_name, audio, sr)
-            if audio_file != new_name:
+            sf.write(new_name, audio_processed, sr)
+            
+            # Delete old file only if it has a different name
+            if audio_file != new_name and audio_file.exists():
                 audio_file.unlink()
             
             print(f"  ✅ Enrolled: {speaker_name} ({client_id})")
@@ -89,10 +112,12 @@ def setup_samples():
             
         except Exception as e:
             print(f"  ❌ Error: {str(e)}")
+            import traceback
+            traceback.print_exc()
             continue
     
     print("\n" + "=" * 60)
-    print(f"✅ Enrollment complete! {enrolled_count}/10 samples enrolled")
+    print(f"✅ Enrollment complete! {enrolled_count}/{min(len(audio_files), 10)} samples enrolled")
     print("\nRun: streamlit run app.py")
 
 

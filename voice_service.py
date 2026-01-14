@@ -1,4 +1,4 @@
-"""Voice recognition service with real-time preprocessing."""
+"""Voice recognition service with optimized preprocessing."""
 
 from pathlib import Path
 import numpy as np
@@ -14,7 +14,7 @@ class VoiceService:
     """Main service for voice recognition operations."""
     
     def __init__(self):
-        self.embeddings = VoiceEmbedder()  # VoiceEmbedder instance
+        self.embeddings = VoiceEmbedder()
         self.mongo = MongoManager()
         self.qdrant = QdrantManager()
         
@@ -30,11 +30,17 @@ class VoiceService:
         Returns:
             (is_known, client_id, name, confidence)
         """
-        # PREPROCESSING: Clean audio in real-time
-        audio = preprocess_audio(audio, sr, enhance=True)
+        # LIGHT preprocessing for identification
+        audio_processed = preprocess_audio(audio, sr, for_enrollment=False)
         
-        # Extract embedding - FIXED: use extract_from_array()
-        embedding = self.embeddings.extract_from_array(audio, sr)
+        # Ensure minimum length (1 second)
+        if len(audio_processed) < sr * 1.0:
+            print(f"⚠️ Audio too short after preprocessing: {len(audio_processed)/sr:.2f}s")
+            # Use original if preprocessing destroyed too much
+            audio_processed = audio
+        
+        # Extract embedding
+        embedding = self.embeddings.extract_from_array(audio_processed, sr)
         
         # Search in vector DB
         results = self.qdrant.search(embedding, limit=1)
@@ -62,20 +68,30 @@ class VoiceService:
     
     def enroll_from_array(self, audio: np.ndarray, name: str, sr: int = 16000):
         """
-        Enroll new speaker from audio array with preprocessing.
+        Enroll new speaker from audio array with MINIMAL preprocessing.
         
         Returns:
             client_id
         """
-        # PREPROCESSING: Clean audio before enrollment
-        audio = preprocess_audio(audio, sr, enhance=True)
+        # MINIMAL preprocessing for enrollment - preserve voice characteristics
+        audio_processed = preprocess_audio(audio, sr, for_enrollment=True)
+        
+        # Ensure we have enough audio
+        if len(audio_processed) < sr * 1.0:
+            print(f"⚠️ Audio too short after preprocessing: {len(audio_processed)/sr:.2f}s, using original")
+            # Use original audio if preprocessing removed too much
+            audio_processed = audio
+            # Just normalize the original
+            max_val = np.abs(audio_processed).max()
+            if max_val > 0:
+                audio_processed = audio_processed / max_val
         
         # Generate client ID
         timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
         client_id = f"CLIENT_{timestamp}"
         
-        # Extract embedding - FIXED: use extract_from_array()
-        embedding = self.embeddings.extract_from_array(audio, sr)
+        # Extract embedding
+        embedding = self.embeddings.extract_from_array(audio_processed, sr)
         
         # Store in MongoDB
         user_doc = {
