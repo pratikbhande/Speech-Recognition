@@ -21,8 +21,9 @@ QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 
 # Voice Recognition
 EMBEDDING_DIM = 192
-SIMILARITY_THRESHOLD = 0.90
+SIMILARITY_THRESHOLD = 0.75
 COLLECTION_NAME = "voice_embeddings"
+MODEL_TYPE = "speechbrain"  # Options: "speechbrain" or "wespeaker"
 
 # Audio
 SAMPLE_RATE = 16000

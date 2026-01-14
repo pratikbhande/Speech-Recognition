@@ -201,6 +201,7 @@ st.markdown('<p class="main-header">🎙️ Voice Recognition System</p>', unsaf
 st.markdown('<p class="sub-header">Advanced Multi-Speaker Identification & Auto-Enrollment</p>', unsafe_allow_html=True)
 
 # Show current threshold setting
+# Show current threshold setting
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
     
@@ -224,6 +225,39 @@ with st.sidebar:
     st.caption("• 0.70-0.75: Balanced (default)")
     st.caption("• 0.80-0.85: Strict (better accuracy)")
     st.caption("• 0.60-0.65: Lenient (more flexible)")
+    
+    # MODEL SELECTION
+    st.markdown("---")
+    st.markdown("### 🤖 Model Selection")
+    
+    current_model = config.MODEL_TYPE
+    
+    model_info = {
+        "speechbrain": "ECAPA-TDNN (~0.7% EER)\nFast, well-tested",
+        "wespeaker": "ResNet34 (0.447% EER)\nBest accuracy, SOTA"
+    }
+    
+    model_choice = st.radio(
+        "Choose embedding model:",
+        options=["speechbrain", "wespeaker"],
+        index=0 if current_model == "speechbrain" else 1,
+        help=f"SpeechBrain: {model_info['speechbrain']}\nWeSpeaker: {model_info['wespeaker']}"
+    )
+    
+    if model_choice != config.MODEL_TYPE:
+        config.MODEL_TYPE = model_choice
+        # Clear the cached service to force reload with new model
+        st.cache_resource.clear()
+        st.success(f"✅ Switched to {model_choice.upper()} model")
+        st.info("🔄 Please re-enroll samples with: python cleanup.py && python data_setup.py")
+        st.rerun()
+    
+    # Show current model info
+    st.caption(f"**Active:** {config.MODEL_TYPE.upper()}")
+    if config.MODEL_TYPE == "wespeaker":
+        st.caption("🏆 Best accuracy (0.447% EER)")
+    else:
+        st.caption("⚡ Fast and reliable")
 
 # Create tabs
 tab1, tab2, tab3 = st.tabs([
@@ -456,6 +490,7 @@ with tab2:
 
 
 # ==================== TAB 3: Database ====================
+# ==================== TAB 3: Database ====================
 with tab3:
     st.markdown("### 👥 Speaker Database")
     
@@ -465,15 +500,19 @@ with tab3:
     speakers = service.get_all_speakers()
     
     if speakers:
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric("Total", len(speakers))
         with col2:
-            samples = len([s for s in speakers if s.get('client_id', '').startswith('SAMPLE_') or s.get('is_sample', False)])
+            samples = len([s for s in speakers if s.get('client_id', '').startswith('SAMPLE_')])
             st.metric("Samples", samples)
         with col3:
-            st.metric("Users", len(speakers) - samples)
+            sb_count = len([s for s in speakers if s.get('model_type') == 'speechbrain'])
+            st.metric("SpeechBrain", sb_count)
+        with col4:
+            ws_count = len([s for s in speakers if s.get('model_type') == 'wespeaker'])
+            st.metric("WeSpeaker", ws_count)
         
         st.markdown("---")
         
@@ -481,9 +520,10 @@ with tab3:
             name = speaker.get('name', 'N/A')
             client_id = speaker.get('client_id', 'N/A')
             created = str(speaker.get('created_at', 'N/A'))[:19]
-            is_sample = client_id.startswith('SAMPLE_') or speaker.get('is_sample', False)
+            is_sample = client_id.startswith('SAMPLE_')
+            model_type = speaker.get('model_type', 'unknown')
             
-            col1, col2, col3, col4 = st.columns([0.5, 2, 2.5, 1])
+            col1, col2, col3, col4, col5 = st.columns([0.5, 2, 1, 2.5, 1])
             
             with col1:
                 st.write(f"**{idx}**")
@@ -491,8 +531,15 @@ with tab3:
                 badge = "🎵" if is_sample else "👤"
                 st.write(f"{badge} **{name}**")
             with col3:
-                st.caption(f"`{client_id}` | {created}")
+                if model_type == "speechbrain":
+                    st.caption("🔵 SB")
+                elif model_type == "wespeaker":
+                    st.caption("🟢 WS")
+                else:
+                    st.caption("❓")
             with col4:
+                st.caption(f"`{client_id}` | {created}")
+            with col5:
                 if st.button("🗑️", key=f"del_{client_id}", use_container_width=True):
                     success, msg = delete_speaker(client_id)
                     if success:
