@@ -1,0 +1,4 @@
+venv/
+data/dev-clean-2.tar.gz
+pretrained_models/
+__pycache__/
